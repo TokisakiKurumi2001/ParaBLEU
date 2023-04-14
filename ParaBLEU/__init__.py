@@ -1,4 +1,4 @@
 from .dataloader import ParaBLEUPDataLoader
-# from .configuration import EditEncoderConfig
-# from .model import ReWordModel
-# from .pl_wrapper import LitReWord
+from .configuration import ParaMapConfig
+from .model import ParaBLEUPretrainedModel
+from .pl_wrapper import LitParaBLEU

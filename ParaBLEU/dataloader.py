@@ -66,6 +66,7 @@ class ParaBLEUPDataLoader:
             rt_dict[f'mask_{k}'] = v
         for k, v in gen.items():
             rt_dict[f'gen_{k}'] = v
+        rt_dict['ent_labels'] = examples['label']
         return rt_dict
 
     def __collate_fn(self, examples):
