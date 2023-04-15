@@ -2,33 +2,34 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 from typing import List
-from ReWord import ReWordModel, ReWordConfig
+from ParaBLEU import ParaBLEUPretrainedModel
 import evaluate
 import numpy as np
 import re
-from transformers import RobertaTokenizer
+from transformers import M2M100Tokenizer, get_constant_schedule_with_warmup
 
-class LitReWord(pl.LightningModule):
-    def __init__(self, pretrained_ck: str, layers_use_from_last: int, method_for_layers: str, lr: float):
-        super(LitReWord, self).__init__()
-        config = ReWordConfig.from_pretrained(
-            pretrained_ck,
-            pretrained_ck=pretrained_ck,
-            layers_use_from_last=layers_use_from_last,
-            method_for_layers=method_for_layers)
-        self.tokenizer = RobertaTokenizer.from_pretrained(pretrained_ck)
-        self.tokenizer.add_tokens(['<ma>', '<madv>', '<mn>', '<mp>', '<ms>', '<mv>'])
-        self.model = ReWordModel(config)
-        self.vocab_size = self.model.config.vocab_size
-        self.loss = nn.CrossEntropyLoss()
+class LitParaBLEU(pl.LightningModule):
+    def __init__(self, encoder_ckpt: str, gen_ckpt: str, lr: float, alpha: float, beta: float):
+        super(LitParaBLEU, self).__init__()
+        self.tokenizer = M2M100Tokenizer.from_pretrained(gen_ckpt)
+        self.model = ParaBLEUPretrainedModel('xlm-roberta-base', 'facebook/m2m100_418M')
+        self.gen_vocab_size = self.model.gen_vocab_size
+        self.mlm_vocab_size = self.model.mlm_vocab_size
+        self.cls_class_num = self.model.config.cls_out
+        self.mlm_loss = nn.CrossEntropyLoss()
+        self.cls_loss = nn.CrossEntropyLoss()
+        self.gen_loss = nn.CrossEntropyLoss()
         self.lr = lr
-        self.valid_metric = evaluate.load("sacrebleu")
-        self.test_metric = evaluate.load("sacrebleu")
+        self.alpha = alpha
+        self.beta = beta
+        self.gen_valid_metric = evaluate.load("sacrebleu")
+        self.gen_test_metric = evaluate.load("sacrebleu")
+        self.cls_valid_metric = evaluate.load("accuracy")
+        self.cls_test_metric = evaluate.load("accuracy")
         self.save_hyperparameters()
 
     def export_model(self, path):
         self.model.save_pretrained(path)
-        self.tokenizer.save_pretrained(path)
 
     def __postprocess(self, preds, labels, eos_token_id=2):
         predictions = preds.cpu().numpy()
@@ -46,40 +47,81 @@ class LitReWord(pl.LightningModule):
         return decoded_preds, decoded_labels
 
     def training_step(self, batch, batch_idx):
-        labels = batch.pop('labels')
-        logits = self.model(**batch)
-        loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
+        mlm_labels = batch.pop('mask_labels')
+        cls_labels = batch.pop('ent_labels')
+        gen_labels = batch.pop('gen_labels')
+        m, c, g = self.model(batch)
+
+        gen_loss = self.gen_loss(g.view(-1, self.gen_vocab_size), gen_labels.view(-1).long())
+        mlm_loss = self.mlm_loss(m.view(-1, self.mlm_vocab_size), mlm_labels.view(-1).long())
+        cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1).long())
+
+        loss = gen_loss + self.alpha * mlm_loss + self.beta * cls_loss
+        self.log("train/gen_loss", gen_loss, sync_dist=True)
+        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("train/cls_loss", cls_loss, sync_dist=True)
         self.log("train/loss", loss, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        labels = batch.pop('labels')
-        logits = self.model(**batch)
-        loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-        self.log('valid/loss', loss, sync_dist=True)
+        mlm_labels = batch.pop('mask_labels')
+        cls_labels = batch.pop('ent_labels')
+        gen_labels = batch.pop('gen_labels')
+        m, c, g = self.model(batch)
 
-        preds = logits.argmax(dim=-1)
-        decoded_preds, decoded_labels = self.__postprocess(preds, labels)
-        self.valid_metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        gen_loss = self.gen_loss(g.view(-1, self.gen_vocab_size), gen_labels.view(-1).long())
+        mlm_loss = self.mlm_loss(m.view(-1, self.mlm_vocab_size), mlm_labels.view(-1).long())
+        cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1).long())
+
+        loss = gen_loss + self.alpha * mlm_loss + self.beta * cls_loss
+        self.log("train/gen_loss", gen_loss, sync_dist=True)
+        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("train/cls_loss", cls_loss, sync_dist=True)
+        self.log("train/loss", loss, sync_dist=True)
+
+        preds = g.argmax(dim=-1)
+        decoded_preds, decoded_labels = self.__postprocess(preds, gen_labels)
+        self.gen_valid_metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+        cls_preds = c.argmax(dim=-1)
+        self.cls_valid_metric.add_batch(predictions=cls_preds, references=cls_labels)
 
     def validation_epoch_end(self, outputs):
-        results = self.valid_metric.compute()
+        results = self.gen_valid_metric.compute()
         self.log('valid/sacre_bleu', results['score'], on_epoch=True, on_step=False, sync_dist=True)
+        results = self.cls_valid_metric.compute()
+        self.log('valid/accuracy', results['accuracy'], on_epoch=True, on_step=False, sync_dist=True)
 
     def test_step(self, batch, batch_idx):
-        labels = batch.pop('labels')
-        logits = self.model(**batch)
-        loss = self.loss(logits.view(-1, self.vocab_size), labels.view(-1))
-        self.log('test/loss', loss, sync_dist=True)
+        mlm_labels = batch.pop('mask_labels')
+        cls_labels = batch.pop('ent_labels')
+        gen_labels = batch.pop('gen_labels')
+        m, c, g = self.model(batch)
 
-        preds = logits.argmax(dim=-1)
-        decoded_preds, decoded_labels = self.__postprocess(preds, labels)
-        self.test_metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        gen_loss = self.gen_loss(g.view(-1, self.gen_vocab_size), gen_labels.view(-1))
+        mlm_loss = self.mlm_loss(m.view(-1, self.mlm_vocab_size), mlm_labels.view(-1))
+        cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1))
+
+        loss = gen_loss + self.alpha * mlm_loss + self.beta * cls_loss
+        self.log("train/gen_loss", gen_loss, sync_dist=True)
+        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("train/cls_loss", cls_loss, sync_dist=True)
+        self.log("train/loss", loss, sync_dist=True)
+
+        preds = g.argmax(dim=-1)
+        decoded_preds, decoded_labels = self.__postprocess(preds, gen_labels)
+        self.gen_test_metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+        cls_preds = c.argmax(dim=-1)
+        self.cls_test_metric.add_batch(predictions=cls_preds, references=cls_labels)
 
     def test_epoch_end(self, outputs):
-        results = self.test_metric.compute()
+        results = self.gen_test_metric.compute()
         self.log('test/sacre_bleu', results['score'], on_epoch=True, on_step=False, sync_dist=True)
+        results = self.cls_valid_metric.compute()
+        self.log('valid/accuracy', results['accuracy'], on_epoch=True, on_step=False, sync_dist=True)
         
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
-        return optimizer
+        lr_scheduler = get_constant_schedule_with_warmup(optimizer, 1500)
+        return [optimizer], [lr_scheduler]

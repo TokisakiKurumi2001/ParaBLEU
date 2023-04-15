@@ -93,6 +93,9 @@ class ParaBLEUPretrainedModel(nn.Module):
 
         self.norm = nn.LayerNorm(config.gen_hidden_size, eps=config.layer_norm_eps)
 
+        self.mlm_vocab_size = config.mlm_vocab_size
+        self.gen_vocab_size = 128112
+
     def save_pretrained(self, path):
         self.mapper.save_pretrained(path + "/mapper")
         self.encoder.save_pretrained(path + "/encoder")
