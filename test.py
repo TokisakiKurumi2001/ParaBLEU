@@ -47,8 +47,8 @@ def postprocess(preds, labels, eos_token_id=2):
     return decoded_preds, decoded_labels
 
 import evaluate
-gen_valid_metric = evaluate.load("sacrebleu")
-cls_valid_metric = evaluate.load("accuracy")
+gen_valid_metric = evaluate.load("metrics/sacrebleu.py")
+cls_valid_metric = evaluate.load("metrics/accuracy.py")
 
 preds = g.argmax(dim=-1)
 decoded_preds, decoded_labels = postprocess(preds, gen_labels)

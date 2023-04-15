@@ -10,8 +10,8 @@ from copy import deepcopy
 
 class ParaBLEUPDataLoader:
     def __init__(self, encoder_ckpt: str, s2s_ckpt: str, max_length: int):
-        dataset = load_dataset('csv', data_files=["data/paws-x-parableu.csv"])
-        dataset = dataset['train'].train_test_split(test_size=0.05, seed=42)
+        data_dict = {'train': 'data/pawsx.train.csv', 'test': 'data/pawsx.test.csv', 'validation': 'data/pawsx.validation.csv'}
+        dataset = load_dataset('csv', data_files=data_dict)
         self.encoder_tokenizer = XLMRobertaTokenizerFast.from_pretrained(encoder_ckpt)
         self.s2s_tokenizer = M2M100Tokenizer.from_pretrained(s2s_ckpt)
         self.max_length = max_length
@@ -74,15 +74,6 @@ class ParaBLEUPDataLoader:
             encoded_inputs = {key: [example[key] for example in examples] for key in examples[0].keys()}
         else:
             encoded_inputs = examples
-        # mask_toks = [self.__tokenize_mlm(inp['sentence1'], inp['sentence2']) for inp in examples]
-        # mask_toks = {key: [example[key] for example in mask_toks] for key in mask_toks[0].keys()}
-
-        # batch = {k: torch.tensor(v, dtype=torch.int32) for k, v in mask_toks.items()}
-        # batch['ent_labels'] = torch.tensor(encoded_inputs['label'], dtype=torch.int32)
-
-        # gen_toks = [self.__tokenize_gen(inp['sentence1'], inp['sentence2'], "en") for inp in examples]
-        # gen_toks = {key: [example[key] for example in gen_toks] for key in gen_toks[0].keys()} 
-        # gen_toks = {k: torch.tensor(v, dtype=torch.int32) for k, v in gen_toks.items()}
         
         # convert list to tensor
         batch = {k: torch.tensor(v, dtype=torch.int32) for k, v in encoded_inputs.items()}

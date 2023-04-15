@@ -22,10 +22,10 @@ class LitParaBLEU(pl.LightningModule):
         self.lr = lr
         self.alpha = alpha
         self.beta = beta
-        self.gen_valid_metric = evaluate.load("sacrebleu")
-        self.gen_test_metric = evaluate.load("sacrebleu")
-        self.cls_valid_metric = evaluate.load("accuracy")
-        self.cls_test_metric = evaluate.load("accuracy")
+        self.gen_valid_metric = evaluate.load("metrics/sacrebleu.py")
+        self.gen_test_metric = evaluate.load("metrics/sacrebleu.py")
+        self.cls_valid_metric = evaluate.load("metrics/accuracy.py")
+        self.cls_test_metric = evaluate.load("metrics/accuracy.py")
         self.save_hyperparameters()
 
     def export_model(self, path):
@@ -74,10 +74,10 @@ class LitParaBLEU(pl.LightningModule):
         cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1).long())
 
         loss = gen_loss + self.alpha * mlm_loss + self.beta * cls_loss
-        self.log("train/gen_loss", gen_loss, sync_dist=True)
-        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
-        self.log("train/cls_loss", cls_loss, sync_dist=True)
-        self.log("train/loss", loss, sync_dist=True)
+        self.log("valid/gen_loss", gen_loss, sync_dist=True)
+        self.log("valid/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("valid/cls_loss", cls_loss, sync_dist=True)
+        self.log("valid/loss", loss, sync_dist=True)
 
         preds = g.argmax(dim=-1)
         decoded_preds, decoded_labels = self.__postprocess(preds, gen_labels)
@@ -98,15 +98,15 @@ class LitParaBLEU(pl.LightningModule):
         gen_labels = batch.pop('gen_labels')
         m, c, g = self.model(batch)
 
-        gen_loss = self.gen_loss(g.view(-1, self.gen_vocab_size), gen_labels.view(-1))
-        mlm_loss = self.mlm_loss(m.view(-1, self.mlm_vocab_size), mlm_labels.view(-1))
-        cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1))
+        gen_loss = self.gen_loss(g.view(-1, self.gen_vocab_size), gen_labels.view(-1).long())
+        mlm_loss = self.mlm_loss(m.view(-1, self.mlm_vocab_size), mlm_labels.view(-1).long())
+        cls_loss = self.cls_loss(c.view(-1, self.cls_class_num), cls_labels.view(-1).long())
 
         loss = gen_loss + self.alpha * mlm_loss + self.beta * cls_loss
-        self.log("train/gen_loss", gen_loss, sync_dist=True)
-        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
-        self.log("train/cls_loss", cls_loss, sync_dist=True)
-        self.log("train/loss", loss, sync_dist=True)
+        self.log("test/gen_loss", gen_loss, sync_dist=True)
+        self.log("test/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("test/cls_loss", cls_loss, sync_dist=True)
+        self.log("test/loss", loss, sync_dist=True)
 
         preds = g.argmax(dim=-1)
         decoded_preds, decoded_labels = self.__postprocess(preds, gen_labels)
@@ -119,7 +119,7 @@ class LitParaBLEU(pl.LightningModule):
         results = self.gen_test_metric.compute()
         self.log('test/sacre_bleu', results['score'], on_epoch=True, on_step=False, sync_dist=True)
         results = self.cls_valid_metric.compute()
-        self.log('valid/accuracy', results['accuracy'], on_epoch=True, on_step=False, sync_dist=True)
+        self.log('test/accuracy', results['accuracy'], on_epoch=True, on_step=False, sync_dist=True)
         
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
