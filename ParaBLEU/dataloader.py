@@ -59,7 +59,7 @@ class ParaBLEUPDataLoader:
 
     def __tokenize(self, examples):
         mask = self.__tokenize_mlm(examples['sentence1'], examples['sentence2'])
-        gen = self.__tokenize_gen(examples['sentence1'], examples['sentence2'], "en")
+        gen = self.__tokenize_gen(examples['sentence1'], examples['sentence2'], examples['lang'])
         
         rt_dict = {}
         for k, v in mask.items():
